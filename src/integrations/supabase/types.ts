@@ -23,6 +23,7 @@ export type Database = {
           id: string
           location_preference: string
           name: string
+          note: string | null
           response_type: string
           selected_date: string
           selected_time: string
@@ -37,6 +38,7 @@ export type Database = {
           id?: string
           location_preference: string
           name?: string
+          note?: string | null
           response_type: string
           selected_date: string
           selected_time: string
@@ -51,6 +53,7 @@ export type Database = {
           id?: string
           location_preference?: string
           name?: string
+          note?: string | null
           response_type?: string
           selected_date?: string
           selected_time?: string

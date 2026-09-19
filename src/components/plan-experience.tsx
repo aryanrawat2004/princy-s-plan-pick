@@ -11,15 +11,17 @@ import { Button } from "@/components/ui/button";
 import { Calendar } from "@/components/ui/calendar";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Slider } from "@/components/ui/slider";
+import { Textarea } from "@/components/ui/textarea";
 import { supabase } from "@/integrations/supabase/client";
+import { sendPlanNotification } from "@/lib/date-plans.functions";
 import { cn } from "@/lib/utils";
 
 type State = {
-  step: number; suspicion: number; response: string; activity: string; preference: string;
-  date: string; time: string; location: string; deal: string; confirmed: boolean;
+  step: number; suspicion: number; response: string; activity: string[]; preference: string[];
+  date: string; time: string; location: string; deal: string; note: string; confirmed: boolean;
 };
 
-const initial: State = { step: 0, suspicion: 36, response: "", activity: "", preference: "", date: "", time: "", location: "", deal: "", confirmed: false };
+const initial: State = { step: 0, suspicion: 36, response: "", activity: [], preference: [], date: "", time: "", location: "", deal: "", note: "", confirmed: false };
 const STORAGE_KEY = "pick-our-plan-v1";
 
 const activities = [
@@ -32,6 +34,17 @@ const activities = [
   ["Something Random", "we figure it out on the way", Star],
   ["Surprise Me", "dangerous choice 😂", Sparkles],
 ] as const;
+
+const activityStorageNames: Record<string, string> = {
+  "Coffee Date": "Coffee",
+  "Movie + Snacks": "Movie",
+  "Food Date": "Food",
+  "Evening Walk + Chai": "Walk + Chai",
+  "Bowling / Games": "Bowling",
+  "Ice Cream Drive": "Ice Cream",
+  "Something Random": "Random",
+  "Surprise Me": "Surprise",
+};
 
 const moviePrefs = ["Comedy 😂", "Rom-Com 🫶", "Horror 👻", "Thriller 👀", "Action 💥", "Anything except boring 😭", "You choose"];
 const foodPrefs = ["Coffee ☕", "Pizza 🍕", "Dessert 🍰", "Momos 🥟", "Pasta 🍝", "Something spicy 🌶️", "Whatever looks good 😂", "You decide"];
@@ -49,12 +62,26 @@ export function PlanExperience() {
   const [exactTime, setExactTime] = useState(false);
 
   useEffect(() => {
-    try { const saved = localStorage.getItem(STORAGE_KEY); if (saved) setState({ ...initial, ...JSON.parse(saved) }); } catch { /* fresh start */ }
+    try {
+      const saved = localStorage.getItem(STORAGE_KEY);
+      if (saved) {
+        const parsed = JSON.parse(saved) as Partial<Omit<State, "activity" | "preference">> & { activity?: string | string[]; preference?: string | string[] };
+        setState({
+          ...initial,
+          ...parsed,
+          activity: Array.isArray(parsed.activity) ? parsed.activity : parsed.activity ? [parsed.activity] : [],
+          preference: Array.isArray(parsed.preference) ? parsed.preference : parsed.preference ? [parsed.preference] : [],
+        });
+      }
+    } catch { /* fresh start */ }
     setHydrated(true);
   }, []);
   useEffect(() => { if (hydrated) localStorage.setItem(STORAGE_KEY, JSON.stringify(state)); }, [state, hydrated]);
 
-  const preferenceNeeded = state.activity.includes("Movie") || state.activity.includes("Coffee") || state.activity.includes("Food");
+  const hasMovie = state.activity.some((choice) => choice.includes("Movie"));
+  const hasFood = state.activity.some((choice) => choice.includes("Coffee") || choice.includes("Food"));
+  const preferenceNeeded = hasMovie || hasFood;
+  const preferenceOptions = hasMovie && hasFood ? Array.from(new Set([...moviePrefs, ...foodPrefs])) : hasMovie ? moviePrefs : foodPrefs;
   const set = (patch: Partial<State>) => setState((s) => ({ ...s, ...patch }));
   const next = () => setState((s) => ({ ...s, step: s.step + 1 }));
   const back = () => setState((s) => ({ ...s, step: Math.max(0, s.step - 1) }));
@@ -67,19 +94,48 @@ export function PlanExperience() {
     set({ response });
     if (response === "Yes, why not 😌") setTimeout(next, 180);
   };
-  const chooseActivity = (activity: string) => set({ activity, preference: "" });
+  const chooseActivity = (activity: string) => setState((s) => ({
+    ...s,
+    activity: s.activity.includes(activity) ? s.activity.filter((choice) => choice !== activity) : [...s.activity, activity],
+    preference: [],
+  }));
+  const choosePreference = (preference: string) => setState((s) => ({
+    ...s,
+    preference: s.preference.includes(preference) ? s.preference.filter((choice) => choice !== preference) : [...s.preference, preference],
+  }));
   const afterActivity = () => set({ step: preferenceNeeded ? 5 : 6 });
 
   const confirm = async () => {
     setSaving(true);
-    const { error } = await supabase.from("date_plans").insert({
-      activity: state.activity, activity_preference: state.preference || null,
+    const planData = {
+      activity: state.activity.map((choice) => activityStorageNames[choice] ?? choice).join(" • "),
+      activity_preference: state.preference.length ? state.preference.join(" • ") : null,
       selected_date: state.date, selected_time: state.time, location_preference: state.location,
       suspicion_level: state.suspicion, response_type: state.response, deal_response: state.deal,
-    });
+    };
+    let { error } = await supabase.from("date_plans").insert({ ...planData, note: state.note.trim() || null });
+    const noteColumnMissing = error?.code === "PGRST204" || /note.*(?:column|schema cache)|(?:column|schema cache).*note/i.test(error?.message ?? "");
+    if (error && noteColumnMissing) {
+      ({ error } = await supabase.from("date_plans").insert(planData));
+    }
+    if (error) { setSaving(false); toast.error("Something went wrong 😭", { description: "Try once more." }); return; }
+    try {
+      await sendPlanNotification({ data: {
+        activity: state.activity.join(" • "),
+        preference: state.preference.join(" • "),
+        date: displayDate(state.date),
+        time: state.time,
+        location: state.location,
+        response: state.response,
+        deal: state.deal,
+        note: state.note.trim(),
+      } });
+      toast.success("Plan saved and shared ✨");
+    } catch {
+      toast.warning("Plan saved, but the email could not be sent.");
+    }
     setSaving(false);
-    if (error) { toast.error("Something went wrong 😭", { description: "Try once more." }); return; }
-    toast.success("Plan saved ✨"); set({ confirmed: true, step: 11 });
+    set({ confirmed: true, step: 11 });
   };
 
   if (!hydrated) return <main className="min-h-dvh bg-background" />;
@@ -101,15 +157,15 @@ export function PlanExperience() {
             <motion.div key={state.step} initial={{ opacity: 0, y: 12, scale: .985 }} animate={{ opacity: 1, y: 0, scale: 1 }} exit={{ opacity: 0, y: -8, scale: .99 }} transition={{ duration: .24, ease: "easeOut" }} className="flex min-h-full flex-1 flex-col">
               {state.step === 0 && <Intro onNext={next} />}
               {state.step === 1 && <Screen title="Before we begin…" subtitle="How suspicious are you right now? 👀"><div className="my-auto py-8"><div className="mb-5 flex justify-between text-xs text-muted-foreground"><span>Not at all</span><span>Very 😂</span></div><Slider value={[state.suspicion]} max={100} step={1} onValueChange={([value]) => set({ suspicion: value ?? 0 })} /><motion.div key={suspicionCopy} initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="mt-8 rounded-2xl bg-lavender/60 p-5 text-center font-accent text-xl">{suspicionCopy}</motion.div></div><NextButton onClick={next}>Continue</NextButton></Screen>}
-              {state.step === 2 && <ClarityScreen onNext={next} />}
-              {state.step === 3 && <Screen title="So… should we actually make a plan? 👀" subtitle={<>Bas ek simple sa plan.<br/>No awkwardness.<br/>No serious talks required 😂</>}><div className="mt-7 space-y-3">{["Yes, why not 😌", "Hmm… convince me 😂", "Maybe some other time :)"].map((x) => <Option key={x} selected={state.response === x} onClick={() => selectResponse(x)} title={x} />)}</div>{state.response.includes("convince") && <div className="mt-5 rounded-2xl bg-peach/65 p-4 text-sm leading-6"><b>My strongest argument:</b><br/>good food + bad jokes + zero pressure 😂<NextButton className="mt-4" onClick={next}>Okay fine, show me options 👀</NextButton></div>}{state.response.includes("other") && <div className="mt-5 rounded-2xl bg-muted/70 p-5 text-center"><p>All good 😌<br/>No pressure at all.</p><Button variant="soft" size="plan" className="mt-4 w-full" onClick={() => set({ response: "" })}>Back</Button></div>}</Screen>}
-              {state.step === 4 && <Screen title="What are we doing? 👀" subtitle="You pick the vibe."><div className="mt-6 grid grid-cols-2 gap-3">{activities.map(([title, subtitle, Icon]) => <Option key={title} selected={state.activity === title} onClick={() => chooseActivity(title)} title={title} subtitle={subtitle} icon={<Icon />} />)}</div>{state.activity && <p className="mt-4 text-center font-accent text-lg text-primary">{state.activity === "Surprise Me" ? "You really picked surprise me? 😭😂" : "Good choice 😌"}</p>}<NextButton disabled={!state.activity} onClick={afterActivity}>Next <ArrowRight /></NextButton></Screen>}
-              {state.step === 5 && <Screen title={state.activity.includes("Movie") ? "Okay movie person 🍿" : "Important question 😂"} subtitle={state.activity.includes("Movie") ? "What type?" : "What are we eating?"}><div className="mt-7 grid grid-cols-2 gap-3">{(state.activity.includes("Movie") ? moviePrefs : foodPrefs).map((x) => <Option key={x} selected={state.preference === x} onClick={() => set({ preference: x })} title={x} />)}</div><NextButton disabled={!state.preference} onClick={next}>Next <ArrowRight /></NextButton></Screen>}
+              {state.step === 2 && <Screen title="So… should we actually make a plan? 👀" subtitle={<>Bas ek simple sa plan.<br/>No awkwardness.<br/>No serious talks required 😂</>}><div className="mt-7 space-y-3">{["Yes, why not 😌", "Hmm… convince me 😂", "Maybe some other time :)"].map((x) => <Option key={x} selected={state.response === x} onClick={() => selectResponse(x)} title={x} />)}</div>{state.response.includes("convince") && <div className="mt-5 rounded-2xl bg-peach/65 p-4 text-sm leading-6"><b>My strongest argument:</b><br/>good food + bad jokes + zero pressure 😂<NextButton className="mt-4" onClick={next}>Okay fine, show me options 👀</NextButton></div>}{state.response.includes("other") && <div className="mt-5 rounded-2xl bg-muted/70 p-5 text-center"><p>All good 😌<br/>No pressure at all.</p><Button variant="soft" size="plan" className="mt-4 w-full" onClick={() => set({ response: "" })}>Back</Button></div>}</Screen>}
+              {state.step === 3 && <ClarityScreen onNext={next} />}
+              {state.step === 4 && <Screen title="What are we doing? 👀" subtitle="Pick as many as you like."><div className="mt-6 grid grid-cols-2 gap-3">{activities.map(([title, subtitle, Icon]) => <Option key={title} selected={state.activity.includes(title)} onClick={() => chooseActivity(title)} title={title} subtitle={subtitle} icon={<Icon />} />)}</div>{state.activity.length > 0 && <p className="mt-4 text-center font-accent text-lg text-primary">{state.activity.includes("Surprise Me") ? "You really picked surprise me? 😭😂" : `${state.activity.length} good ${state.activity.length === 1 ? "choice" : "choices"} 😌`}</p>}<NextButton disabled={state.activity.length === 0} onClick={afterActivity}>Next <ArrowRight /></NextButton></Screen>}
+              {state.step === 5 && <Screen title={hasMovie && hasFood ? "Pick all the favourites 😌" : hasMovie ? "Okay movie person 🍿" : "Important question 😂"} subtitle={hasMovie && hasFood ? "Food and movie choices — select as many as you like." : hasMovie ? "What types? Pick more than one." : "What are we eating? Pick more than one."}><div className="mt-7 grid grid-cols-2 gap-3">{preferenceOptions.map((x) => <Option key={x} selected={state.preference.includes(x)} onClick={() => choosePreference(x)} title={x} />)}</div><NextButton disabled={state.preference.length === 0} onClick={next}>Next <ArrowRight /></NextButton></Screen>}
               {state.step === 6 && <Screen title="When are you free? 📅" subtitle="Pick whatever feels comfortable."><div className="mt-7 grid grid-cols-2 gap-3">{quickDates.map((d) => <DateOption key={d.toISOString()} date={d} selected={state.date === isoDate(d)} onClick={() => set({ date: isoDate(d) })} />)}</div><Popover><PopoverTrigger asChild><Button variant="soft" size="plan" className="mt-3 w-full"><CalendarDays /> Choose another date</Button></PopoverTrigger><PopoverContent className="pointer-events-auto w-auto rounded-2xl p-0" align="center"><Calendar mode="single" selected={state.date ? new Date(`${state.date}T12:00:00`) : undefined} onSelect={(d) => d && set({ date: isoDate(d) })} disabled={{ before: new Date(2026, 8, 19) }} defaultMonth={new Date(2026, 8, 1)} className="pointer-events-auto rounded-2xl" /></PopoverContent></Popover>{state.date && <p className="mt-4 text-center text-sm font-medium text-primary">{displayDate(state.date)} — noted ✨</p>}<NextButton disabled={!state.date} onClick={next}>Next <ArrowRight /></NextButton></Screen>}
               {state.step === 7 && <Screen title="What time works best? ⏰"><div className="mt-7 grid grid-cols-2 gap-3">{times.map(([title, subtitle, emoji]) => <Option key={title} selected={state.time === title || (title === "Evening" && !state.time)} recommended={title === "Evening"} onClick={() => { set({ time: title }); setExactTime(false); }} title={`${emoji} ${title}`} subtitle={subtitle} />)}</div><Button variant="soft" size="plan" className="mt-3 w-full" onClick={() => setExactTime(true)}><Clock3 /> Pick exact time</Button>{exactTime && <input aria-label="Pick exact time" type="time" className="mt-3 min-h-12 w-full rounded-2xl border border-input bg-card px-4 text-center text-foreground outline-none focus:ring-2 focus:ring-ring" onChange={(e) => set({ time: e.target.value })} />}<NextButton disabled={!state.time} onClick={next}>Next <ArrowRight /></NextButton></Screen>}
               {state.step === 8 && <Screen title="Where should we meet? 📍" subtitle="No need to decide exact cafe right now."><div className="mt-7 space-y-3">{locations.map((x) => <Option key={x} selected={state.location === x} onClick={() => set({ location: x })} title={x} icon={<MapPin />} />)}</div><NextButton disabled={!state.location} onClick={next}>Next <ArrowRight /></NextButton></Screen>}
               {state.step === 9 && <Screen><div className="my-auto rounded-[26px] border border-primary/30 bg-gradient-rule p-6 text-center shadow-soft"><div className="mx-auto mb-5 grid size-12 place-items-center rounded-full bg-primary text-primary-foreground"><PartyPopper /></div><h1 className="font-accent text-4xl">One rule ☝️</h1><p className="mt-5 leading-8 text-muted-foreground">Phone thoda side mein rakhenge,<br/>kaam ki baatein thodi kam karenge,<br/>aur bas thoda chill karenge :)</p><p className="mt-6 font-semibold">Deal?</p><div className="mt-5 grid grid-cols-2 gap-3"><Button variant="plan" size="plan" onClick={() => { set({ deal: "Deal 😌" }); setTimeout(next, 150); }}>Deal 😌</Button><Button variant="soft" size="plan" onClick={() => set({ deal: "Depends 😂" })}>Depends 😂</Button></div>{state.deal === "Depends 😂" && <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="mt-4 text-sm">Fair 😂<br/>Negotiations allowed.<NextButton className="mt-4" onClick={next}>Continue</NextButton></motion.div>}</div></Screen>}
-              {state.step === 10 && <Screen title="So it’s a plan? 👀"><Summary state={state} /><p className="mt-5 text-center text-sm leading-6 text-muted-foreground">No pressure.<br/>No labels.<br/>Bas thoda time together. 🌷</p><NextButton disabled={saving} onClick={confirm}>{saving ? "Saving…" : "Lock This Plan 🔒✨"}</NextButton><Button variant="ghost" size="plan" className="mt-2 w-full text-muted-foreground" onClick={() => set({ step: 4 })}>Wait, I changed my mind 😂</Button></Screen>}
+              {state.step === 10 && <Screen title="So it’s a plan? 👀"><Summary state={state} /><div className="mt-5 rounded-[22px] border border-primary/20 bg-gradient-to-br from-peach/45 via-card to-lavender/35 p-5 text-center shadow-soft"><Heart className="mx-auto text-primary/70" size={20}/><p className="mt-3 font-accent text-xl text-foreground">Bas itna hi tha 😌</p><p className="mt-3 text-sm leading-6 text-muted-foreground">Mujhe sirf tumhare saath thoda normal sa time spend karna tha.<br/>Tum comfortable ho, wahi enough hai.</p></div><label htmlFor="princy-note" className="mt-6 block text-center"><span className="font-accent text-xl text-foreground">Anything you want me to know? 👀</span><span className="mt-1 block text-xs text-muted-foreground">Totally optional</span></label><Textarea id="princy-note" value={state.note} maxLength={500} onChange={(e) => set({ note: e.target.value })} placeholder="Write anything you’d like…" className="mt-3 min-h-28 resize-none rounded-[20px] bg-card/70 p-4 leading-6 focus-visible:ring-2"/><p className="mt-2 text-right text-[11px] text-muted-foreground">{state.note.length}/500</p><NextButton disabled={saving} onClick={confirm}>{saving ? "Saving…" : "Lock This Plan 🔒✨"}</NextButton><Button variant="ghost" size="plan" className="mt-2 w-full text-muted-foreground" onClick={() => set({ step: 4 })}>Wait, I changed my mind 😂</Button></Screen>}
               {state.step === 11 && <Success onSummary={() => set({ step: 10 })} />}
             </motion.div>
           </AnimatePresence>
@@ -145,8 +201,8 @@ function ClarityScreen({ onNext }: { onNext: () => void }) {
   );
 }
 function NextButton({ children, className, ...props }: React.ComponentProps<typeof Button>) { return <Button variant="plan" size="plan" className={cn("mt-auto w-full", className)} {...props}>{children}</Button>; }
-function Option({ title, subtitle, icon, selected, recommended, onClick }: { title: string; subtitle?: string; icon?: React.ReactNode; selected: boolean; recommended?: boolean; onClick: () => void }) { return <motion.button type="button" whileTap={{ scale: .98 }} onClick={onClick} className={cn("relative flex min-h-16 w-full items-center gap-3 rounded-[20px] border bg-card/70 p-4 text-left shadow-soft transition", selected ? "border-primary bg-primary/10 shadow-plan" : "border-border hover:border-primary/40")}><span className="flex size-8 shrink-0 items-center justify-center text-primary [&_svg]:size-5">{icon ?? (selected ? <Check /> : null)}</span><span className="min-w-0"><span className="block text-sm font-semibold leading-5">{title}</span>{subtitle && <span className="mt-1 block text-xs leading-4 text-muted-foreground">{subtitle}</span>}</span>{recommended && <span className="absolute -top-2 right-3 rounded-full bg-lavender px-2 py-1 text-[9px] font-semibold uppercase tracking-wider">lovely pick</span>}</motion.button>; }
+function Option({ title, subtitle, icon, selected, recommended, onClick }: { title: string; subtitle?: string; icon?: React.ReactNode; selected: boolean; recommended?: boolean; onClick: () => void }) { return <motion.button type="button" aria-pressed={selected} whileTap={{ scale: .98 }} onClick={onClick} className={cn("relative flex min-h-16 w-full items-center gap-3 rounded-[20px] border bg-card/70 p-4 text-left shadow-soft transition", selected ? "border-primary bg-primary/10 shadow-plan" : "border-border hover:border-primary/40")}><span className="flex size-8 shrink-0 items-center justify-center text-primary [&_svg]:size-5">{selected ? <Check /> : icon}</span><span className="min-w-0"><span className="block text-sm font-semibold leading-5">{title}</span>{subtitle && <span className="mt-1 block text-xs leading-4 text-muted-foreground">{subtitle}</span>}</span>{recommended && <span className="absolute -top-2 right-3 rounded-full bg-lavender px-2 py-1 text-[9px] font-semibold uppercase tracking-wider">lovely pick</span>}</motion.button>; }
 function DateOption({ date, selected, onClick }: { date: Date; selected: boolean; onClick: () => void }) { return <motion.button whileTap={{ scale: .97 }} onClick={onClick} className={cn("min-h-24 rounded-[20px] border bg-card/70 p-3 text-center shadow-soft", selected ? "border-primary bg-primary/10 shadow-plan" : "border-border")}><span className="block text-xs text-muted-foreground">{format(date, "EEEE")}</span><span className="mt-1 block font-accent text-2xl">{format(date, "d MMM")}</span></motion.button>; }
-function Summary({ state }: { state: State }) { return <div className="ticket mt-7 overflow-hidden rounded-[24px] border border-primary/35 bg-card shadow-plan"><div className="border-b border-dashed border-primary/35 bg-primary/10 px-5 py-4 text-center"><p className="text-xs uppercase tracking-[0.2em] text-muted-foreground">our little plan</p><h2 className="mt-1 font-accent text-3xl">Princy + Aryan</h2></div><div className="space-y-4 p-5 text-sm">{[["✨", "Activity", state.activity], ["📅", "Date", displayDate(state.date)], ["🕕", "Time", state.time], ["🍰", "Preference", state.preference || "We’ll figure it out 😌"], ["📍", "Location", state.location]].map(([icon, label, value]) => <div key={label} className="grid grid-cols-[24px_88px_minmax(0,1fr)] gap-2"><span>{icon}</span><span className="text-muted-foreground">{label}</span><b className="min-w-0 text-right font-medium">{value}</b></div>)}</div></div>; }
+function Summary({ state }: { state: State }) { return <div className="ticket mt-7 overflow-hidden rounded-[24px] border border-primary/35 bg-card shadow-plan"><div className="border-b border-dashed border-primary/35 bg-primary/10 px-5 py-4 text-center"><p className="text-xs uppercase tracking-[0.2em] text-muted-foreground">our little plan</p><h2 className="mt-1 font-accent text-3xl">Princy + Aryan</h2></div><div className="space-y-4 p-5 text-sm">{[["✨", "Activity", state.activity.join(" • ")], ["📅", "Date", displayDate(state.date)], ["🕕", "Time", state.time], ["🍰", "Preference", state.preference.length ? state.preference.join(" • ") : "We’ll figure it out 😌"], ["📍", "Location", state.location]].map(([icon, label, value]) => <div key={label} className="grid grid-cols-[24px_88px_minmax(0,1fr)] gap-2"><span>{icon}</span><span className="text-muted-foreground">{label}</span><b className="min-w-0 text-right font-medium">{value}</b></div>)}</div></div>; }
 function Success({ onSummary }: { onSummary: () => void }) { return <div className="relative flex min-h-full flex-1 flex-col items-center justify-center text-center">{Array.from({ length: 9 }).map((_, i) => <motion.span key={i} className="absolute text-primary" style={{ left: `${10 + ((i * 31) % 80)}%`, top: `${8 + ((i * 17) % 72)}%` }} animate={{ y: [0, -12, 0], opacity: [.35, 1, .35], rotate: [0, 20, 0] }} transition={{ repeat: Infinity, delay: i * .16, duration: 2.4 }}><Sparkles size={i % 3 === 0 ? 18 : 12} /></motion.span>)}<div className="relative grid size-20 place-items-center rounded-full bg-primary/15 text-primary shadow-plan"><Sparkles size={36} /></div><h1 className="mt-7 font-accent text-5xl">Yayyy 🥹</h1><p className="mt-4 text-xl font-semibold">Plan locked.</p><div className="mt-7 space-y-3 leading-7 text-muted-foreground"><p>Your only job:<br/><b className="text-foreground">show up 😌</b></p><p>Planning meri responsibility.</p><p className="font-accent text-2xl text-foreground">See you ✨</p></div><p className="mt-6 text-sm text-muted-foreground">I’ll text you the final place.</p><Button variant="soft" size="plan" className="mt-9 w-full" onClick={onSummary}>See Our Plan</Button><p className="mt-5 text-xs text-muted-foreground">made specially for Princy 🌷</p></div>; }
 function Decorations() { return <div aria-hidden className="pointer-events-none absolute inset-0"><div className="absolute left-[8%] top-[12%] size-40 rounded-full bg-peach/35 blur-3xl"/><div className="absolute bottom-[8%] right-[5%] size-52 rounded-full bg-lavender/40 blur-3xl"/><Sparkles className="absolute left-[12%] top-[28%] text-primary/40" size={18}/><Star className="absolute bottom-[18%] right-[14%] text-primary/30" size={14}/></div>; }
