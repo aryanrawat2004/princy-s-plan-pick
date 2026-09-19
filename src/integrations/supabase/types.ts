@@ -14,7 +14,51 @@ export type Database = {
   }
   public: {
     Tables: {
-      [_ in never]: never
+      date_plans: {
+        Row: {
+          activity: string
+          activity_preference: string | null
+          created_at: string
+          deal_response: string
+          id: string
+          location_preference: string
+          name: string
+          response_type: string
+          selected_date: string
+          selected_time: string
+          status: string
+          suspicion_level: number
+        }
+        Insert: {
+          activity: string
+          activity_preference?: string | null
+          created_at?: string
+          deal_response: string
+          id?: string
+          location_preference: string
+          name?: string
+          response_type: string
+          selected_date: string
+          selected_time: string
+          status?: string
+          suspicion_level: number
+        }
+        Update: {
+          activity?: string
+          activity_preference?: string | null
+          created_at?: string
+          deal_response?: string
+          id?: string
+          location_preference?: string
+          name?: string
+          response_type?: string
+          selected_date?: string
+          selected_time?: string
+          status?: string
+          suspicion_level?: number
+        }
+        Relationships: []
+      }
     }
     Views: {
       [_ in never]: never
