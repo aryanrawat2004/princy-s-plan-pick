@@ -30,7 +30,16 @@ function AdminPage() {
   const unlock = async () => {
     setLoading(true);
     try { setPlans(await getDatePlans({ data: { password } })); }
-    catch { toast.error("That password didn’t work."); }
+    catch (error) {
+        console.error("ADMIN ERROR:", error);
+
+        const message =
+          error instanceof Error
+            ? error.message
+            : "Unknown admin error";
+
+        toast.error(message);
+      }
     finally { setLoading(false); }
   };
 
