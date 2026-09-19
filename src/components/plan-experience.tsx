@@ -36,7 +36,7 @@ const activities = [
 const moviePrefs = ["Comedy 😂", "Rom-Com 🫶", "Horror 👻", "Thriller 👀", "Action 💥", "Anything except boring 😭", "You choose"];
 const foodPrefs = ["Coffee ☕", "Pizza 🍕", "Dessert 🍰", "Momos 🥟", "Pasta 🍝", "Something spicy 🌶️", "Whatever looks good 😂", "You decide"];
 const locations = ["Near your side", "Near my side", "Somewhere in between", "You choose the place", "Aryan, you decide 😌", "Surprise me"];
-const times = [["Afternoon", "1 PM – 4 PM", "🌤️"], ["Evening", "4 PM – 7 PM", "🌅"], ["Night-ish", "7 PM – 9 PM", "🌙"], ["You decide", "Aryan figures it out", "✨"]];
+const times = [["Afternoon", "1 PM – 4 PM", "🌤️"], ["Evening", "4 PM – 7 PM", "🌅"], ["Night-ish", "7 PM – 9 PM", "🌙"], ["You decide", "Aryan figures it out", "✨"]] as const;
 const quickDates = [new Date(2026, 8, 20), new Date(2026, 8, 25), new Date(2026, 8, 26), new Date(2026, 8, 27)];
 
 function isoDate(date: Date) { return format(date, "yyyy-MM-dd"); }

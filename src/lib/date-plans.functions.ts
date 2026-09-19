@@ -2,7 +2,7 @@ import { createServerFn } from "@tanstack/react-start";
 import { z } from "zod";
 
 export const getDatePlans = createServerFn({ method: "POST" })
-  .inputValidator((data) => z.object({ password: z.string().min(1).max(200) }).parse(data))
+  .validator((data) => z.object({ password: z.string().min(1).max(200) }).parse(data))
   .handler(async ({ data }) => {
     const expected = process.env["ADMIN_PASSWORD"] ?? process.env["VITE_ADMIN_PASSWORD"];
     if (!expected || data.password !== expected) throw new Error("Unauthorized");
